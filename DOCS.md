@@ -1,0 +1,197 @@
+# CodeSage Academy — Maintenance Handbook
+
+Everything about how the app is built, where data lives, and exactly what to touch when you add or change content.
+
+---
+
+## 1. Big picture
+
+- **Frontend only**: React 18 + Vite + TypeScript + Tailwind. All course content is *static TypeScript files in the bundle* — no lesson text is stored in the database.
+- **Backend (PostgreSQL Database & Edge Functions / Cloud Backend)** stores only *user state*: profile, XP, streak, completed lessons/tests, enrollments, suggestions + votes, announcements, student IDs, promo codes.
+- **Local storage** holds device-level preferences and caches (see §6).
+
+---
+
+## 2. Adding a NEW TRACK — the comprehensive checklist
+
+Use Cyber Security or C++ as reference implementations. Suppose your new track is `rust`.
+
+| # | File | What to add |
+|---|------|-------------|
+| 1 | `src/data/rustLessons.ts` | `RUST_LESSONS` array + `getRustLessonById()` + `isRustLessonUnlocked()`. Lesson ids must share a unique prefix, e.g. `rust-01`. |
+| 2 | `src/pages/RustLearn.tsx` | Track home page (lesson list + progress bar). Copy `CyberLearn.tsx` or `CppLearn.tsx`. |
+| 3 | `src/pages/RustLessonPage.tsx` | Lesson viewer / interactive execution environment. Copy `CyberLessonPage.tsx` or `CppLessonPage.tsx`. |
+| 4 | `src/App.tsx` | Two routes: `/rust` and `/rust-lesson/:id`, wrapped in `<ProtectedRoute>` and lazy-loaded. |
+| 5 | `src/data/lessonIndex.ts` | Add `'rust'` to `LessonTrackKey`, `TRACK_LESSON_IDS`, `TRACK_LESSON_LABELS`, `TRACK_BASE_URLS`, and add the title lookup branch inside `getLessonDetails()`. Drives dashboard cards, settings progress, and roadmap totals. |
+| 6 | `src/lib/enrollment.ts` | Add `'rust'` to `TrackId`, `VALID_TRACK_IDS`, and a `TRACK_META.rust` entry (`label`, `short`, `route`, `idPrefix`, `seed`, optional `prereq`). |
+| 7 | **Database** | Add `'rust'` to the allowed list inside `enroll_track()` **and** insert every `rust-*` id into `lesson_registry`. Without registry rows, `award_lesson` raises "Unknown lesson id" and progress won't record. |
+| 8 | `src/pages/Dashboard.tsx` | Add `SECTIONS` entry (or add to an existing section), `ROUTE_TO_TRACK['/rust']`, `DashboardCategory`, `filterOptions`, `SEARCH_CATEGORIES`, `TOUR_STEPS`, and optional `GUEST_ALLOWED` + `GUEST_FIRST_LESSON`. |
+| 9 | `src/pages/Roadmap.tsx` | Import lessons, add route prefix to `TrackNode.routePrefix`, add `buildTrack(...)` in `TRACKS_DATA`, selector pill in `TRACKS`, and `TRACK_KEY_TO_ENROLL_TRACK`. Optionally add to `CAREER_PATHS`. |
+| 10 | `src/pages/LessonComplete.tsx` | Add a `TRACKS` row (`prefix: 'rust-'`, `path: '/rust-lesson'`) and `TRACK_HOME['rust-'] = '/rust'`, so the celebration card, "next lesson" and "course roadmap" buttons work. |
+| 11 | `src/components/EnrollDialog.tsx` | If the track has prerequisites, add a friendly `PREREQ_WARNING` recommendation copy and route CTA. |
+| 12 | `src/components/SkillHealthCard.tsx` | Add `rust: '🦀'` to `TRACK_EMOJIS` so the student skill breakdown card shows the correct badge icon. |
+| 13 | `src/services/aiTeacherService.ts` & `src/data/courseCurriculumGuide.ts` | Add to `TRACK_CATALOG_DEFS` (enables AI Teacher grounding on your lessons) and `COURSE_CURRICULUM` (powers top bar curriculum guide). |
+
+**Rule of thumb:** if a lesson completes but progress disappears after refresh, you forgot step 7 (server `lesson_registry`).
+
+---
+
+## 3. Adding / editing LESSONS
+
+- Lesson shape (all non-frontend tracks) = `NetworkingLesson`: `id, module, order, title, icon, philosophy, concepts[{title, beginner, advanced}], practical{title, intro, steps[], goal}, quiz[{question, options[], correctIndex, explanation}], keyTakeaways[]`.
+- Quizzes need at least 4 questions; the pass rule in the lesson pages is **3 correct**.
+- Unlocking is sequential: `isXLessonUnlocked` checks that the *previous* lesson id is in `completedLessons`.
+- **Every new lesson id must be inserted into `lesson_registry`** (a one-line migration). This is the server-side allowlist that prevents XP farming.
+- Frontend track lessons live in `src/data/lessons.ts` and are grouped by level (basics / intermediate / expert).
+
+## 4. Adding / editing CHALLENGES
+
+- File: `src/data/challengesData.ts`. Each challenge has a tier (`easy | medium | hard | complex`), title, prompt, starter code and validation.
+- Page: `src/pages/Challenges.tsx` groups by tier automatically — adding an entry with a valid tier is enough, no other file to touch.
+
+## 5. Adding / editing EXAMS
+
+- Files: `src/data/exams/*.ts` (one file per subject: frontend, python, java, sql, ai, fundamentals).
+- `src/pages/QuestionsPage.tsx` (the Testing Center) reads those files: Daily Challenge picks a random subset, Full Exam Simulator runs the timed set with elimination tools and analytics.
+- To add a new subject: create `src/data/exams/<subject>.ts` exporting a question array, then register it in the exam list inside `QuestionsPage.tsx`.
+
+---
+
+## 6. Where state lives
+
+### Database (per user, survives devices)
+
+| Table | Holds |
+|---|---|
+| `profiles` | name, username, avatar fields, XP, level, sage coins, streak, `completed_lessons[]`, `completed_tests[]`, `unlocked_sections[]`, `promo_codes[]`, `student_id`, `has_seen_tour`, `streak_freeze_until` |
+| `enrollments` | one row per user+track with status `active / paused / ended` |
+| `track_stats` | public enrolled counters shown on the dashboard tiles |
+| `lesson_registry`, `test_registry` | server-side allowlists of valid ids |
+| `suggestions`, `suggestion_votes`, `suggestion_reads` | community board + real-time up/down votes |
+| `announcements`, `announcement_reads` | admin inbox messages |
+| `promo_codes`, `app_secrets` | unlock codes and the admin password (never readable from the client) |
+
+### Local storage (per device, disposable)
+
+`codesage_guest_lesson_taken` (guest one-lesson gate) · `codesage:enroll_cache:v2` and `codesage:count_cache:v2` (enrollment/count cache for instant reads) · login lockout counters (`loginGuard.ts`) · theme, editor font size, auto-run · `dash.sections.collapsed.v1` (dashboard folds) · `codesage_dashboard_category` · playground drafts.
+
+Clearing local storage never loses real progress — it only resets preferences and caches.
+
+---
+
+## 7. How the backend enforces progress
+
+All writes that grant rewards go through `SECURITY DEFINER` functions, not direct table updates:
+
+- `award_lesson(_lesson_id)` — validates the id against `lesson_registry`, refuses duplicates, adds **+5 XP / +2 coins**, recomputes level (`xp / 200 + 1`) and badge thresholds.
+- `complete_test(_test_id)` — same idea against `test_registry`.
+- `enroll_track(_track)` — validates the track name, upserts the enrollment, bumps `track_stats`.
+- `update_enrollment_status(_track, _status)` — pause / end, keeps counters consistent.
+- `update_streak()` — daily streak with freeze support; `buy_freeze_streak()` costs 10 XP.
+- `redeem_promo(_code)` — unlocks sections.
+- Admin RPCs (`post_announcement`, `reply_suggestion`, `admin_edit_suggestion`, `admin_delete_suggestion`) require the admin password stored in `app_secrets`.
+
+Anonymous users cannot execute any of these; every table has RLS and explicit grants.
+
+---
+
+## 8. The runtimes (which terminal does what)
+
+| Track | Engine | Notes |
+|---|---|---|
+| Frontend / Full Stack / Local / 3D | `LivePreview.tsx` — sandboxed iframe running real HTML/CSS/JS | Debounced hot-swap so typing doesn't flash. Three.js loads from CDN inside the iframe. |
+| Python / Python Expert | **Skulpt**, lazy-loaded on first run | Supports `input()`, prints to the in-page terminal. No pip packages, no file system. |
+| SQL | `SqlWorkspace.tsx` — in-browser SQL engine | Queries run against a seeded demo dataset. |
+| Java | `JavaWorkspace.tsx` | Pattern/keyword validation of the exercise, not a real JVM. |
+| C++ | `CppWorkspace.tsx` | Same approach: guided validation; lesson 1 teaches installing a real g++/clang locally. |
+| Cyber Security | `CyberLessonPage.tsx` | In-browser simulated Linux terminal (`bash`, `nmap`, `grep`, `chmod`, `cat`, permissions, exploits, hashes) with objective tests and CTF flag verification. |
+| Playground | Monaco editor + LivePreview | Single-file or multi-folder mode, ZIP import/export, mobile cut/copy/paste, dockable console. |
+
+---
+
+## 9. Common edits — quick answers
+
+- **Change lesson count shown on a dashboard tile** → `SECTIONS` in `Dashboard.tsx` (`lessons:` field).
+- **Change XP per lesson** → the `award_lesson` function (server), then the copy in the lesson pages.
+- **Change the admin password** → update the `admin_password` row in `app_secrets`.
+- **Change enrollment limits / prerequisites** → `src/lib/enrollment.ts` (`TRACK_META.prereq`, active-track limit) and `EnrollDialog.tsx` copy.
+- **Reset a user's progress** → clear their `completed_lessons` array in `profiles`.
+
+---
+
+## 12. Admin console (`/admin`)
+
+Open **Settings → Admin** (small link at the bottom) or go straight to `/admin`. You must be signed in *and* type the admin password; the password is kept in `sessionStorage` only, so it is gone when the tab closes.
+
+**Password:** unchanged — `admin-codesage-1994`, stored as the `admin_password` row in the `app_secrets` table. To change it:
+`update app_secrets set value = '<new password>', updated_at = now() where key = 'admin_password';`
+That single row controls the admin console, announcement posting, and suggestion edit/delete/reply.
+
+### What the console shows
+
+Top cards: total students, total lessons recorded in the database, total XP, students with at least one active track.
+Search box: matches name, email, username or student ID.
+Each row expands into:
+
+| Group | Fields |
+|---|---|
+| Identity | email, username, student ID, user id |
+| Dates | joined (auth account creation), last sign-in, email confirmed, last active |
+| Onboarding | date of birth, studying, has a job, experience level, goal |
+| Gamification | XP, level, streak, sage coins, badges |
+| Enrollments | every track with status (`active` / `paused` / `ended`) and enrolment date |
+| Lessons in the database | per-track bar `done/total` built from `src/data/lessonIndex.ts`, plus the raw `completed_lessons` array exactly as stored in Supabase |
+| Other | tests passed, unlocked sections, promo codes, suggestions posted |
+
+The "raw lesson IDs" block is the ground truth: if a lesson is missing there, the server never recorded it (see §7 and the offline retry queue in `UserContext.tsx`).
+
+### Where it lives
+
+- Page: `src/pages/Admin.tsx` (route added in `src/App.tsx`).
+- Data: one database function, `admin_list_users(_password)`, `SECURITY DEFINER`, returns a JSON array. It joins `profiles` with `auth.users` (for email / sign-in dates) and `enrollments`, and refuses to run without a valid admin password. Anonymous users cannot execute it.
+
+### Editing the console
+
+- **Show another profile column** → add it to the `SELECT` inside `admin_list_users` (new migration) and add a `<Field …/>` in `Admin.tsx`.
+- **Change per-track lesson totals** → they come from `TRACK_LESSON_IDS` in `src/data/lessonIndex.ts`; nothing to change in the admin page.
+- **Add an admin action (ban, reset progress…)** → write a new `SECURITY DEFINER` function that checks `app_secrets.admin_password` the same way, then call it from `Admin.tsx` with the password already held in state.
+
+## 13. Suggestion notifications
+
+- Badge component: `src/components/SuggestionsBadge.tsx` (shown in the dashboard header).
+- Unread = suggestions whose `updated_at` is newer than your `suggestion_reads.last_seen_at`, counting **other people's** posts plus **admin replies on your own** posts.
+- Opening `/suggestions` calls `mark_suggestions_read()` and fires a `suggestions:read` window event so the badge clears instantly.
+- Live updates need the table in the realtime publication — `suggestions` and `announcements` are both published with `REPLICA IDENTITY FULL`. There is also a 60-second poll and a window-focus refresh as a fallback.
+
+## 14. Terms & Privacy
+
+- `src/pages/Terms.tsx` (`/terms`) and `src/pages/Privacy.tsx` (`/privacy`). Both are plain text inside `<Section>` blocks — edit the text directly, no database involved.
+- Sign-up now requires ticking the acceptance box in `src/pages/Auth.tsx`; without it the form refuses to submit.
+
+## 15. Admin access (role-based — replaces the old admin password)
+
+The shared admin password is **gone**. Admin powers are now tied to your account via the
+`user_roles` table (`user_id`, `role` where role is `admin` | `moderator` | `user`).
+
+- All admin RPCs (`admin_list_users`, `admin_delete_user`, `post_announcement`,
+  `reply_suggestion`, `admin_edit_suggestion`, `admin_delete_suggestion`) check
+  `public.is_admin()` server-side. No password argument anymore.
+- The `app_secrets` table (which stored `admin_password`) has been dropped.
+
+**Grant admin to another account** (run in the backend SQL editor):
+
+```sql
+insert into public.user_roles (user_id, role)
+select id, 'admin' from auth.users where email = 'someone@example.com'
+on conflict do nothing;
+```
+
+**Revoke:**
+
+```sql
+delete from public.user_roles where role = 'admin'
+  and user_id = (select id from auth.users where email = 'someone@example.com');
+```
+
+The `/admin` console, the Inbox compose box and the Suggestions admin actions all just work
+when your signed-in account holds the `admin` role, and fail with "Admin access required" otherwise.
